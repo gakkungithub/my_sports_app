@@ -3,10 +3,15 @@ from flask import Flask
 import tkinter as tk
 import tkinter.ttk as ttk
 import tkinter.filedialog as fd
-from PIL import ImageTk, Image
-from functools import partial
+from PIL import ImageTk, Image, ImageOps #画像を作成or加工するためのパッケージ
+import cv2 #動画用のパッケージ
+from mutagen.mp4 import MP4
+from scene import *
+from functools import partial #command関数に引数を入れるためのパッケージ
 import time
-import datetime as dt
+import math
+import numpy as np
+import datetime as dt #日付を取得するためのパッケージ
 app = Flask(__name__)
 
 class Application(tk.Frame):
@@ -135,16 +140,17 @@ class Application(tk.Frame):
         self.canvas_bg.place(x=0, y=0)
         
         #プロフィール画面に飛ぶプロフィール画像アイコン
-        self.profile_btn_image = Image.open('profile_icon.png') #画像ファイルを選択する時、拡張子を付けるのを忘れずに。tk.PhotoImageは限定的な拡張子でしかできないので２行使うがこの方法の方が良い。
+        self.myicon = 'profile_icon.png'
+        self.profile_btn_image = Image.open(self.myicon) #画像ファイルを選択する時、拡張子を付けるのを忘れずに。tk.PhotoImageは限定的な拡張子でしかできないので２行使うがこの方法の方が良い。
         self.pf_b_img = ImageTk.PhotoImage(self.profile_btn_image, master=self.master)
-        self.profile_btn = tk.Button(self.mainFrame, image=self.pf_b_img, command=self.m1_btn_clicked)
+        self.profile_btn = tk.Button(self.mainFrame, image=self.pf_b_img, command=self.open_profile)
         self.profile_btn.place(x=0, y=0)
-        #self.canvas_bg.create_image(10, 10, anchor=tk.NW, image=self.pf_b_img, tag='pf_btn_img', state=tk.HIDDEN)
-        #self.canvas_bg.tag_bind('pf_btn_img', '<Button-1>', self.m1_btn_clicked) #tag名を指定する時、間違ってオブジェクト名を指定しない用に注意しよう。
         
         #公式/フォロワーの情報⇔練習メニュー⇔試合・解説動画⇔選手一覧ページを切り替えるためのボタン
         self.practice_btn = tk.Button(self.mainFrame, width=6, height=1, text='練習', bg='#FF00FF', fg='#FFFF00')
-       
+
+##練習メニュー用の動画のタグを絞る画面----------------------------------------------------------------------------------------------------------------------------------------------         
+        
         #練習検索ページ
         self.practice_page = tk.Frame(self.mainFrame, width=300, height=500, bg='#696969')
         
@@ -154,7 +160,7 @@ class Application(tk.Frame):
         
         #競技orポジションを選択する画面。内包表記で複数のフレームを同時に作成する。
         self.cbtn_frame = [tk.Frame(self.practice_page, width=230, height=500, bg='#c0c0c0', relief=tk.RIDGE) for x in self.sports]
-          
+     
 #陸上----------------------------------------------------------------------------------------------------------------------------------------------------------------
         #陸上の競技を選ぶチェックボタン
         self.tandf_cat_chbtn = [[] for i in range(len(self.tandf))]
@@ -204,9 +210,109 @@ class Application(tk.Frame):
         self.bball_btn = [tk.Button(self.cbtn_frame[2], width=6, height=1, bg='#FFFF00', fg='#FF00FF', text=p_text, command=partial(self.bball_btn_clicked, i)) for i, p_text in enumerate(self.bball)]
         [self.bball_btn[i].place(x=0, y=i*40) for i in range(len(self.bball))]
 #----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+##---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
+##動画を流す画面-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+        
+        #動画を流すページ
+        self.videos_page = tk.Frame(self.mainFrame, width=300, height=500, bg='#696969')
+        
+        #他の人が持ってる動画のフレームを保存するリスト
+        self.tk_frame = []
+
+        #フレームはスクロールできないのでキャンバスを載せる。名前は動画を載せるのでプラットフォームとする。
+        self.fnum = 0
+        self.video_platform = tk.Canvas(self.videos_page, width=280, height=500, scrollregion=(0, 0, 280, 2400))
+        
+        #動画を保存するリスト
+        self.video = []
+        #動画のcapture
+        self.cap = []
+        
+        self.video_canvas = []
+        
+        """
+        #他の人の動画を載せるキャンバス
+        self.video_canvas = [tk.Canvas(self.video_platform, width=280, height=300, bg='#FFFF00', relief=tk.RIDGE) for i in range(5)]
+        #canvasに埋めこむことで下地のcanvasと同時にスクロールできる。
+        [self.video_platform.create_window((0, (self.fnum+i)*300), anchor=tk.NW, window=self.video_canvas[i]) for i in range(5)]
+        self.fnum += 5
+        
+        """
+       
+        #垂直方向のスクロールバーの作成
+        self.bar = tk.Scrollbar(self.videos_page, orient=tk.VERTICAL, command=self.video_platform.yview)
+        
+        #スクロールバーの結び付け
+        self.video_platform['yscrollcommand'] = self.bar.set
+        
+        #動画の取得数をカウントする変数
+        self.cnt_vd = 0
+        
+        #動画のパス名
+        self.video_path = 'outside_inside_1.mp4' 
+        self.video_path_1 = 'sample.mov'
+        
+        #ユーザのidとアイコン画像・名前を辞書で関連付ける。
+        self.idtoIconName = {0: ('gakkun_icon.png', 'gakkun'), 1: ('gorilla.png', 'gorilla'), 2: ('profile_icon.png', 'anonymous')}
+        
+        #self.video_btn = tk.Button(self.mainFrame, width=6, height=1, text='ビデオ', bg='#FF00FF', fg='#FFFF00', command=self.make_videos_on_screen_2)
+        
+        #self.video_btn = tk.Button(self.mainFrame, width=6, height=1, text='ビデオ', bg='#FF00FF', fg='#FFFF00', command=self.open_recent_video)
+        
+        
+##---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+##自分の動画を保存する画面---------------------------------------------------------------------------------------------------------------------------------------------------------
+      
+        #自分の動画を流すページ
+        self.myvideos_page = tk.Frame(self.mainFrame, width=300, height=500, bg='#696969')
+
+        #動画を載せるプラットフォーム
+        self.my_fnum = 0
+        self.myvideo_platform = tk.Canvas(self.myvideos_page, width=280, height=500, scrollregion=(0, 0, 280, 0))
+        
+        #自分のアイコンの設定
+        self.myprf_btn_img = Image.open(self.myicon).resize((20, 20))
+        self.mypf_b_img = ImageTk.PhotoImage(self.myprf_btn_img, master=self.master)
+
+        #動画のシークバー
+        self.myskbar = []
+        
+        #動画の長さ
+        self.myaudio_l = []
+        
+        #動画を保存するリスト
+        self.myvideo = []
+        #動画のcapture
+        self.mycap = []
+        
+        #流れている動画のフレームを保存するリスト
+        self.tk_myframe = []
+        
+        #自分の動画を載せるキャンバス
+        self.myvideo_canvas = []
+        
+        #自分の動画の再生ボタン
+        self.resume_btn_image = Image.open('resume.png').resize((15, 15))
+        self.rs_b_img = ImageTk.PhotoImage(self.resume_btn_image, master=self.master)
+        self.myrsm_btn = [] #キャンバスそれぞれの再生ボタン
+        self.myvrs_id = 0 #動画再生のafterで得るid
+        
+        #自分の動画の停止ボタン
+        self.stop_btn_image = Image.open('stop.png').resize((15, 15))
+        self.st_b_img = ImageTk.PhotoImage(self.stop_btn_image, master=self.master)
+        self.mystp_btn = []
+        
+        #垂直方向のスクロールバーの作成
+        self.mybar = tk.Scrollbar(self.myvideos_page, orient=tk.VERTICAL, command=self.myvideo_platform.yview)
+        
+        #スクロールバーの結び付け
+        self.myvideo_platform['yscrollcommand'] = self.mybar.set
+        
+##---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
         self.create_widget()
-####------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+###------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 #プロフィール画面の部品----------------------------------------------------------------------------------------------------------------------------------------------------------
         #プロフィール画面の土台となる画面の作成
@@ -294,12 +400,27 @@ class Application(tk.Frame):
         self.mainFrame.place(x=0, y=0)
         
         self.practice_page.place(x=100, y=100)
+
+        self.myvideos_page.place(x=100, y=100)
+
+        self.myvideo_platform.grid(row=0, column=0)
+        
+        self.mybar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        
+        #self.videos_page.place(x=100, y=100)
+        
+        self.video_platform.grid(row=0, column=0)
+        
+        self.bar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+
+        self.make_video_canvas('gakkun', self.video_path, 'panda')
+        self.make_video_canvas('gakkun', self.video_path_1, 'i like drumming')
         
         self.practice_btn.place(x=100, y=100, anchor=tk.SW)
         
-        self.canvas_bg.itemconfigure('pf_btn_img', state='normal')
+        #self.video_btn.place(x=200, y=100, anchor=tk.SW)
         
-    def m1_btn_clicked(self): 
+    def open_profile(self): 
         self.pFrame.place(x=0, y=0)
         #プロフィール画面の土台の表示
         self.canvas_bg.itemconfigure('darksheet', state='normal')
@@ -352,11 +473,14 @@ class Application(tk.Frame):
         self.bball_btn[self.bball_index].configure(bg='#FFFF00', fg='#FF00FF')
         
         #投のチェックボックスを表示するとき、打で選択したボタンの色を元に戻すと共に、チェックボックスを非表示にする。
-        self.bball_pandb_btn[self.bball_index][self.bball_pitch_index].configure(bg='#FFFF00', fg='#FF00FF')
-        [self.bball_bat_chbtn[self.bball_bat_index][bat].place_forget() for bat in range(self.bball_bat_l)] 
+        if i == 0 and self.bball_index == 1:
+            self.bball_pandb_btn[self.bball_index][self.bball_bat_index].configure(bg='#FFFF00', fg='#FF00FF')
+            [self.bball_bat_chbtn[self.bball_bat_index][bat].place_forget() for bat in range(self.bball_bat_l)] 
         
         #打のチェックボックスを表示するとき、投で選択したボタンの色を元に戻すと共に、投のチェックボックスを非表示にする。
-        [self.bball_pitch_chbtn[self.bball_pitch_index][pitch].place_forget() for pitch in range(self.bball_pitch_l[self.bball_pitch_index])] 
+        elif i == 1 and self.bball_index == 0:
+            self.bball_pandb_btn[self.bball_index][self.bball_pitch_index].configure(bg='#FFFF00', fg='#FF00FF')
+            [self.bball_pitch_chbtn[self.bball_pitch_index][pitch].place_forget() for pitch in range(self.bball_pitch_l[self.bball_pitch_index])] 
         
         [self.bball_pandb_btn[self.bball_index][pandb].place_forget() for pandb in range(self.bball_l[self.bball_index])]
         [self.bball_pandb_btn[i][pandb].place(x=60, y=pandb*40) for pandb in range(self.bball_l[i])]
@@ -378,7 +502,6 @@ class Application(tk.Frame):
             self.bball_pandb_btn[self.bball_index][j].configure(bg='#FF00FF', fg='#FFFF00')
             self.bball_bat_index = j
             
-        
     #プロフィール画面にある戻るボタンを押したときの処理
     def back_btn_clicked(self, event):
         
@@ -405,6 +528,249 @@ class Application(tk.Frame):
         self.canvas_bg.itemconfigure('back_btn_img', state='hidden')
         
         self.pFrame.place_forget()
+        
+    """
+    #ボタンを押すと動画が再生される
+    def resume_video_2(self, event):
+        ret, frame = self.cap.read()
+        if ret:
+            rgb_cv2_frame= cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_frame = Image.fromarray(rgb_cv2_frame)    
+            pil_frame = ImageOps.pad(pil_frame, (200, 100))
+                
+            self.video_platform.delete(self.tk_frame)
+            self.tk_frame = ImageTk.PhotoImage(pil_frame)
+            self.video_platform.delete('all')
+            self.video_platform.create_image(140, 150, image=self.tk_frame)
+        
+        self.revideo_id = self.after(10, self.resume_video)
+            
+            
+    #動画を流す画面の表示
+    def make_videos_on_screen_2(self):
+        self.video_canvas[0].create_text(140, 40, text='動画サンプル')
+        self.cap = cv2.VideoCapture(self.video_path)
+
+        ret, frame = self.cap.read()
+        if ret:
+            rgb_cv2_frame= cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_frame = Image.fromarray(rgb_cv2_frame)    
+            pil_frame = ImageOps.pad(pil_frame, (200, 100))
+                
+            self.tk_frame.append(ImageTk.PhotoImage(pil_frame))
+            self.v_id = self.video_canvas[0].create_image(140, 150, image=self.tk_frame[0])
+            
+        self.video_platform.grid(row=0, column=0)
+        self.bar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        
+        self.resume_video()
+
+    #動画を再生するための関数
+    def resume_video(self):
+        ret, frame = self.cap.read()
+        if ret:
+            rgb_cv2_frame= cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_frame = Image.fromarray(rgb_cv2_frame)    
+            pil_frame = ImageOps.pad(pil_frame, (200, 100))
+                
+            self.tk_frame[0] = ImageTk.PhotoImage(pil_frame)
+            self.video_canvas[0].delete(self.v_id)
+            self.v_id = self.video_canvas[0].create_image(140, 150, image=self.tk_frame[0])
+        
+        self.revideo_id = self.after(10, self.resume_video)
+            
+    #動画を流す画面で動画の更新を行ったとき、それを表示するためのキャンバスを新たに作成する。
+    def make_video_platform(self, video_c):
+        v_num = len(video_c)
+        fnum_added = self.fnum + v_num
+        self.video_platform['scrollregion'] = (0, 0, 280, self.fnum_added*500)
+        for i in range(v_num):
+            self.video_canvas.append(video_c[i])
+            self.video_platform.create_window((0, (self.fnum+i)*500), anchor=tk.NW, window=self.video_canvas[self.fnum+i])
+            
+        self.fnum = fnum_added
+    """
+    #他のユーザーの動画を載せるページ
+    def open_recent_video(self, event):
+        ##通信で動画を取得する処理はここに書く。-----------------------------------------------
+
+        ##-------------------------------------------------------------------------------------
+        if self.my_fnum > self.fnum:
+            self.get_video(self.myvideo_canvas[self.fnum+1:self.my_fnum])
+            
+        self.videos_page.tkraise()   
+        
+    #他のユーザーの動画を取得する。
+    def get_video(self, v_set): #v_set = icon, user_n, myvideo[self.my_fnum], mycap/myvideo, 
+        for x in range(len(v_set)):
+            self.video_canvas.append(self.copy_video(v_set[x]))    
+            
+    #他のユーザの動画を閲覧できるように複製する。
+    def copy_video(self, v_set): 
+        #他のユーザから得た動画を載せるためのキャンバスを作成する。    
+        self.video_platform['scrollregion'] = (0, 0, 280, (self.fnum+1)*300)
+        self.video_canvas.append(tk.Canvas(self.video_platform, width=280, height=300, bg='#FFFF00', relief=tk.RIDGE))
+        
+        #アイコンを設置する。
+        self.video_canvas[self.fnum].create_image(30, 20, image=self.idtoIconName[v_set[0]][0], anchor=tk.NE) #v_setの0番目の要素にはユーザidが入っている。
+            
+        #ユーザネームを設置する。
+        self.video_canvas[self.fnum].create_text(40, 20, text=self.idtoIconName[v_set[0]][1], anchor=tk.NW)
+        
+        #動画を載せる
+        self.video.append(v_set[1])
+        self.cap.append(cv2.VideoCapture(self.video[self.fnum]))
+
+    #自分の動画用のキャンバスを作成する。
+    def make_video_canvas(self, name, video, txt):
+        #自分の動画を載せるためのキャンバスを作成する。
+        self.myvideo_platform['scrollregion'] = (0, 0, 280, (self.my_fnum+1)*300)
+        self.myvideo_canvas.append(tk.Canvas(self.myvideo_platform, width=280, height=300, bg='#FFFF00', relief=tk.RIDGE))
+        
+        #アイコンを設置する。
+        self.myvideo_canvas[self.my_fnum].create_image(30, 20, image=self.mypf_b_img, anchor=tk.NE)
+        
+        #ユーザーネームを設置する。
+        self.myvideo_canvas[self.my_fnum].create_text(40, 20, text=name, anchor=tk.NW)
+        
+        #動画を載せる
+        self.myvideo.append(video)
+        self.mycap.append(cv2.VideoCapture(self.myvideo[self.my_fnum]))
+        ret, frame = self.mycap[self.my_fnum].read()
+        rgb_cv2_frame= cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        pil_frame = Image.fromarray(rgb_cv2_frame)    
+        pil_frame = ImageOps.pad(pil_frame, (200, 100))
+        self.tk_myframe.append(ImageTk.PhotoImage(pil_frame))
+        self.myvideo_canvas[self.my_fnum].create_image(140, 100, image=self.tk_myframe[self.my_fnum])
+        
+        #動画の時間を取得する。小数点は切り上げする。時間はfloat型。
+        self.myaudio_l.append(MP4(video).info.length)
+        myaudio_time = time.gmtime(math.floor(self.myaudio_l[self.my_fnum]))
+        
+        #シークバー
+        if self.myaudio_l[self.my_fnum] / 3600 >= 1:
+            t_str = time.strftime('%H:%M:%S',myaudio_time)
+        else:
+            t_str = time.strftime('%M:%S', myaudio_time)
+        self.myskbar.append(self.create_skbar(t_str))
+        self.myvideo_canvas[self.my_fnum].create_window((40, 150), anchor=tk.NW, window=self.myskbar[self.my_fnum])
+
+        #動画の説明テキストを設置する。
+        self.myvideo_canvas[self.my_fnum].create_text(40, 200, anchor=tk.NW, text=txt)
+        
+        #プラットフォームにキャンバスを載せる
+        self.myvideo_platform.create_window((0, self.my_fnum*300), anchor=tk.NW, window=self.myvideo_canvas[self.my_fnum])
+        
+        self.my_fnum += 1
+
+    #動画のシークバーを作成する。
+    def create_skbar(self, time):
+        #シークバー用のキャンバス
+        canvas = tk.Canvas(self.myvideo_platform, width=200, height=40, bg='#FFFFFF')
+        
+        #動画の進捗度を表すバーとポイント
+        canvas.create_rectangle(10, 9.5, 190, 14.5, fill='#a9a9a9')
+        canvas.create_rectangle(10, 9.5, 190, 14.5, fill='#FF0000', tag='v_proc')
+        canvas.create_oval(5, 7, 15, 17, fill='#FF00FF', tag='proc_p')
+        
+        #停止ボタン
+        canvas.create_image(10, 27.5, image=self.st_b_img, tag='stop', state=tk.HIDDEN)
+        
+        #再生ボタン
+        canvas.create_image(10, 27.5, image=self.rs_b_img, tag='resume')
+        
+        #停止ボタンに機能を結びつける
+        canvas.tag_bind('stop', '<Button-1>', partial(self.myvideo_stop, self.my_fnum))
+        
+        #再生ボタンに機能を結びつける
+        canvas.tag_bind('resume', '<Button-1>', partial(self.myvideo_begin, self.my_fnum))
+
+        #再生時間と動画の時間を表すテキスト
+        canvas.create_text(60, 27.5, fill='#000000', text='00:00', tag='t_now')
+        canvas.create_text(100, 27.5, fill='#000000', text=f'/ {time}', tag='t_end')
+        
+        return canvas
+        
+    #シークバーの状態を更新する。
+    def skbar_controll(self, canvas, percentage, time_n):
+        #シークバーの進行度合いを更新する。
+        canvas.coords('v_proc', 10, 9.5, int(10+180*percentage), 14.5) 
+        #シークバーのボタンを移動させる。
+        canvas.moveto('proc_p', 5+int(180*percentage), 7) 
+        
+        #動画の今の時間を更新する
+        myaudio_time_n = time.gmtime(time_n)
+        if time_n / 3600 >= 1:
+            t_now = time.strftime('%H:%M:%S',myaudio_time_n)
+        else:
+            t_now = time.strftime('%M:%S', myaudio_time_n)
+        canvas.itemconfigure('t_now', text=t_now) 
+        
+    #動画を再生する。
+    def myvideo_begin(self, num, event):
+        #再生ボタンを非表示にして停止ボタンを表示させる。
+        self.myskbar[num].itemconfigure('resume', state='hidden')
+        self.myskbar[num].itemconfigure('stop', state='normal')
+        
+        self.mycap[num] = cv2.VideoCapture(self.myvideo[num])
+            
+        ret, frame = self.mycap[num].read()
+            
+        if ret:
+            rgb_cv2_frame= cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_frame = Image.fromarray(rgb_cv2_frame)    
+            pil_frame = ImageOps.pad(pil_frame, (200, 100))
+                
+            self.myv_id = self.myvideo_canvas[num].create_image(140, 100, image=self.tk_myframe[num])
+        
+        self.resume_myvideo(num)
+      
+        
+    #動画の情報を更新する。
+    def resume_myvideo(self, num):
+        ret, frame = self.mycap[num].read()
+        percentage = self.mycap[num].get(cv2.CAP_PROP_POS_FRAMES) / self.mycap[num].get(cv2.CAP_PROP_FRAME_COUNT) #typeはfloat
+        self.skbar_controll(self.myskbar[num], percentage, math.floor(self.myaudio_l[num] * percentage))
+        if ret:
+            rgb_cv2_frame= cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_frame = Image.fromarray(rgb_cv2_frame)    
+            pil_frame = ImageOps.pad(pil_frame, (200, 100))
+                
+            self.tk_myframe[num] = ImageTk.PhotoImage(pil_frame)
+            self.myvideo_canvas[num].delete(self.myv_id)
+            self.myv_id = self.myvideo_canvas[num].create_image(140, 100, image=self.tk_myframe[num])      
+            
+        self.myvrs_id = self.myvideo_canvas[num].after(10, self.resume_myvideo, num)
+        
+        if self.mycap[num].get(cv2.CAP_PROP_POS_FRAMES) == self.mycap[num].get(cv2.CAP_PROP_FRAME_COUNT):
+            self.myvideo_canvas[num].after_cancel(self.myvrs_id)
+            self.myskbar[num].itemconfigure('stop', state='hidden')
+            self.myskbar[num].itemconfigure('resume', state='normal')
+            #再生ボタンに機能を結びつける
+            self.myskbar[num].tag_bind('resume', '<Button-1>', partial(self.myvideo_begin, num))
+            
+            
+    #動画を停止する。
+    def myvideo_stop(self, num, event):
+        #停止ボタンを非表示にして再生ボタンを表示させる。
+        self.myskbar[num].itemconfigure('stop', state='hidden')
+        self.myskbar[num].itemconfigure('resume', state='normal')
+        
+        #動画の再生を停止する。
+        self.myvideo_canvas[num].after_cancel(self.myvrs_id)
+        
+        #再生ボタンに新たに停止→再生する機能を結びつける必要がある。
+        self.myskbar[num].tag_bind('resume', '<Button-1>', partial(self.myvideo_re_begin, num))
+        
+    #動画の一時停止を解除する。
+    def myvideo_re_begin(self, num, event):
+        #再生ボタンを非表示にして停止ボタンを表示させる。
+        self.myskbar[num].itemconfigure('resume', state='hidden')
+        self.myskbar[num].itemconfigure('stop', state='normal')
+        
+        #afterを再度作り、動画の再生を再開する。
+        self.myvrs_id = self.myvideo_canvas[num].after(10, self.resume_myvideo, num)
+        
     def ed_btn_clicked(self, event):
         
         #戻るボタンを非表示
